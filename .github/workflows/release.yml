@@ -3,7 +3,7 @@ name: Create Release Artifact
 on:
   push:
     tags:
-      - 'v*.*_(snapd_v*.*.*)'
+      - 'v*.*.*_(snapd_v*.*.*)'
 
 jobs:
   build:
@@ -23,18 +23,18 @@ jobs:
       run: |
         TAG_NAME=${GITHUB_REF##*/}
         UBUNTU_IMAGE_VERSION=$(echo $TAG_NAME | cut -d'_' -f1)
-        SNAPD_VERSION=$(echo $TAG_NAME | cut -d'_' -f2 | tr -d '()')
+        SNAPD_VERSION=$(echo $TAG_NAME | sed -n 's/^.*(snapd_v\([0-9.]*\)).*$/\1/p')
         echo "UBUNTU_IMAGE_VERSION=$UBUNTU_IMAGE_VERSION" >> $GITHUB_ENV
         echo "SNAPD_VERSION=$SNAPD_VERSION" >> $GITHUB_ENV
 
     - name: Download snapd tarball
       run: |
-        SNAPD_URL=https://github.com/ML-PA-Consulting-GmbH/snapd/releases/download/${{ env.SNAPD_VERSION }}/snapd_${{ env.SNAPD_VERSION }}.tar
-        curl -L $SNAPD_URL -o /tmp/snapd_${{ env.SNAPD_VERSION }}.tar
+        SNAPD_URL=https://github.com/ML-PA-Consulting-GmbH/snapd/releases/download/v${{ env.SNAPD_VERSION }}/snapd_v${{ env.SNAPD_VERSION }}.tar
+        curl -L $SNAPD_URL -o /tmp/snapd_v${{ env.SNAPD_VERSION }}.tar
 
     - name: Untar snapd
       run: |
-        tar -xf /tmp/snapd_${{ env.SNAPD_VERSION }}.tar -C /tmp
+        tar -xf /tmp/snapd_v${{ env.SNAPD_VERSION }}.tar -C /tmp
 
     - name: Pull dependencies and update go.mod
       run: |
@@ -43,8 +43,7 @@ jobs:
         go mod vendor
 
     - name: Build the project
-      run: |
-        ./mkversion.sh
+      run: ./mkversion.sh
 
     - name: Create tarball
       run: |
