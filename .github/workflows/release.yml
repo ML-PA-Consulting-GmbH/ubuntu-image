@@ -34,11 +34,12 @@ jobs:
 
     - name: Untar snapd
       run: |
-        tar -xf /tmp/snapd_v${{ env.SNAPD_VERSION }}.tar -C /tmp
+        mkdir -p /tmp/snapd
+        tar -xf /tmp/snapd_v${{ env.SNAPD_VERSION }}.tar -C /tmp/snapd
 
     - name: Pull dependencies and update go.mod
       run: |
-        go mod edit -replace github.com/snapcore/snapd=/tmp/snapd
+        go mod edit -replace github.com/snapcore/snapd=/tmp/snapd/snapd
         go mod tidy
         go mod vendor
 
