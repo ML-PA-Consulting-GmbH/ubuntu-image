@@ -51,13 +51,14 @@ jobs:
     - name: Get release ID
       id: get_release
       run: |
-        RELEASE_ID=$(curl -s \
-          -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-          "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ env.UBUNTU_IMAGE_VERSION }}" \
-          | jq -r .id)
+        TAG_NAME=${GITHUB_REF##*/}
+        RELEASE_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG_NAME" | jq -r .id)
         echo "RELEASE_ID=${RELEASE_ID}" >> $GITHUB_ENV
-        echo "Fetched release ID for tag ${{ env.UBUNTU_IMAGE_VERSION }}"
+        echo "Tag name: $TAG_NAME"
         echo "Release ID: $RELEASE_ID"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
     - name: Upload release asset
       uses: actions/upload-release-asset@v1
