@@ -44,9 +44,6 @@ jobs:
         go mod tidy
         go mod vendor
 
-    - name: Build the project
-      run: ./mkversion.sh
-
     - name: Create tarball
       run: |
         tar cfah /tmp/ubuntu-image_${{ env.UBUNTU_IMAGE_VERSION }}.tar .
