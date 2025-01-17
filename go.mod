@@ -1,6 +1,8 @@
 module github.com/canonical/ubuntu-image
 
-go 1.21
+go 1.22
+
+toolchain go1.23.2
 
 require (
 	github.com/diskfs/go-diskfs v1.4.1-0.20240716094240-ec697b09567e
@@ -55,7 +57,7 @@ require (
 	maze.io/x/crypto v0.0.0-20190131090603-9b94c9afe066 // indirect
 )
 
-replace github.com/snapcore/snapd v0.0.0-20241010070736-df476d41dcaa => github.com/ML-PA-Consulting-GmbH/snapd v0.0.0-20250116171534-dca4efd9f718
+replace github.com/snapcore/snapd v0.0.0-20241010070736-df476d41dcaa => github.com/ML-PA-Consulting-GmbH/snapd v0.0.0-20250117180853-37fff732721f
 
 require (
 	github.com/Microsoft/go-winio v0.6.1 // indirect

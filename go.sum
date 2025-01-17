@@ -1,5 +1,7 @@
 dario.cat/mergo v1.0.0 h1:AGCNq9Evsj31mOgNPcLyXc+4PNABt905YmuqPYYpBWk=
 dario.cat/mergo v1.0.0/go.mod h1:uNxQE+84aUszobStD9th8a29P2fMDhsBdgRYvZOxGmk=
+github.com/ML-PA-Consulting-GmbH/snapd v0.0.0-20250117180853-37fff732721f h1:yFtt3gC4KxaDKIlX116HojCUg/45RG4/gb3x1apyR3Q=
+github.com/ML-PA-Consulting-GmbH/snapd v0.0.0-20250117180853-37fff732721f/go.mod h1:c9j4npxTEGjMy6E/7ocAazCMR+82ZWTh/o+5Ic7ilPc=
 github.com/Microsoft/go-winio v0.5.2/go.mod h1:WpS1mjBmmwHBEWmogvA2mj8546UReBk4v8QkMxJ6pZY=
 github.com/Microsoft/go-winio v0.6.1 h1:9/kr64B9VUZrLm5YYwbGtUJnMgqWVOdUAXu6Migciow=
 github.com/Microsoft/go-winio v0.6.1/go.mod h1:LRdKpFKfdobln8UmuiYcKPot9D2v6svN5+sAH+4kjUM=
@@ -127,10 +129,6 @@ github.com/snapcore/go-gettext v0.0.0-20230721153050-9082cdc2db05/go.mod h1:1ueM
 github.com/snapcore/secboot v0.0.0-20240411101434-f3ad7c92552a h1:yzzVi0yUosDYkjSQqGZNVtaVi+6yNFLiF0erKHlBbdo=
 github.com/snapcore/secboot v0.0.0-20240411101434-f3ad7c92552a/go.mod h1:72paVOkm4sJugXt+v9ItmnjXgO921D8xqsbH2OekouY=
 github.com/snapcore/snapd v0.0.0-20201005140838-501d14ac146e/go.mod h1:3xrn7QDDKymcE5VO2rgWEQ5ZAUGb9htfwlXnoel6Io8=
-github.com/snapcore/snapd v0.0.0-20240911193218-25e66bfc4669 h1:h5cydUNPhp4gaT05zVgrT4yjXCGW2ev+mXRfKU2xB7Q=
-github.com/snapcore/snapd v0.0.0-20240911193218-25e66bfc4669/go.mod h1:RfaJNlcyEP2RfVuyAX/3x+CJPECCAlZn+36Yily9FzY=
-github.com/snapcore/snapd v0.0.0-20241010070736-df476d41dcaa h1:jsoJaQ+a8iFYMoF3K5S6FsjaUWJPWyD9eYIDWQS2CuA=
-github.com/snapcore/snapd v0.0.0-20241010070736-df476d41dcaa/go.mod h1:c9j4npxTEGjMy6E/7ocAazCMR+82ZWTh/o+5Ic7ilPc=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.2.2/go.mod h1:a8OnRcib4nhh0OaRAV+Yts87kKdq0PP7pXfy6kDkUVs=
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
