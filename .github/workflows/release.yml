@@ -3,7 +3,7 @@ name: Create Release Artifact
 on:
   push:
     tags:
-      - 'v*.*.*_(snapd_v*.*.*)'
+      - '*'
 
 jobs:
   build:
@@ -16,7 +16,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v2
       with:
-        go-version: '1.22.5'
+        go-version: '1.22'
 
     - name: Extract versions from tag
       id: extract_versions
