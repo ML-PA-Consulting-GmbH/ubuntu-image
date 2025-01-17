@@ -22,25 +22,23 @@ jobs:
       id: extract_versions
       run: |
         TAG_NAME=${GITHUB_REF##*/}
-        UBUNTU_IMAGE_VERSION=$(echo $TAG_NAME | cut -d'_' -f1)
-        SNAPD_VERSION=$(echo $TAG_NAME | sed -n 's/^.*(snapd_v\([0-9.]*\)).*$/\1/p')
+        UBUNTU_IMAGE_VERSION=$TAG_NAME
         echo "UBUNTU_IMAGE_VERSION=$UBUNTU_IMAGE_VERSION" >> $GITHUB_ENV
-        echo "SNAPD_VERSION=$SNAPD_VERSION" >> $GITHUB_ENV
 
-    - name: Download snapd tarball
-      run: |
-        SNAPD_URL=https://github.com/ML-PA-Consulting-GmbH/snapd/releases/download/v${{ env.SNAPD_VERSION }}/snapd_v${{ env.SNAPD_VERSION }}.tar
-        curl -L $SNAPD_URL -o /tmp/snapd_v${{ env.SNAPD_VERSION }}.tar
+    # - name: Download snapd tarball
+    #   run: |
+    #     SNAPD_URL=https://github.com/ML-PA-Consulting-GmbH/snapd/releases/download/v${{ env.SNAPD_VERSION }}/snapd_v${{ env.SNAPD_VERSION }}.tar
+    #     curl -L $SNAPD_URL -o /tmp/snapd_v${{ env.SNAPD_VERSION }}.tar
 
-    - name: Untar snapd
-      run: |
-        mkdir -p /tmp/snapd
-        tar -xf /tmp/snapd_v${{ env.SNAPD_VERSION }}.tar -C /tmp/snapd
-        ls -la /tmp/snapd
+    # - name: Untar snapd
+    #   run: |
+    #     mkdir -p /tmp/snapd
+    #     tar -xf /tmp/snapd_v${{ env.SNAPD_VERSION }}.tar -C /tmp/snapd
+    #     ls -la /tmp/snapd
 
     - name: Pull dependencies and update go.mod
       run: |
-        go mod edit -replace github.com/snapcore/snapd=/tmp/snapd
+        # go mod edit -replace github.com/snapcore/snapd=/tmp/snapd
         go mod tidy
         go mod vendor
 
