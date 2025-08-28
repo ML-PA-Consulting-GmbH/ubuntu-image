@@ -63,7 +63,7 @@ require (
 	maze.io/x/crypto v0.0.0-20190131090603-9b94c9afe066 // indirect
 )
 
-replace github.com/snapcore/snapd v0.0.0-20241010070736-df476d41dcaa => github.com/ML-PA-Consulting-GmbH/snapd v0.0.0-20250116171534-dca4efd9f718
+replace github.com/snapcore/snapd v0.0.0-20250416082404-de527b294f38 => github.com/ML-PA-Consulting-GmbH/snapd v0.0.0-202508281644-7a645b289956
 
 require (
 	github.com/Microsoft/go-winio v0.6.1 // indirect
