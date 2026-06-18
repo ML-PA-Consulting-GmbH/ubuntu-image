@@ -124,14 +124,35 @@ see Part 2) and stamps `snap.Info.SnapID` before `SetInfo`.
 
 Additions only. **Build-time only** — these affect which snaps the
 image builder composes into the seed; the model assertion is never
-modified (an extra snap stays out of the signed model). The device is
-unaffected: the on-device snapd reads the seed and installs every
-seeded snap at run-mode boot independently of these flags (the
-run-mode load path has no grade gate). The trust model is "the
-manifest author pins an exact snap set and verifies the image out of
-band." Verified end-to-end: an arm64 `signed`-grade build with
-`core24` in `extra-snaps` produces an image whose `seed.manifest`
-lists `core24` while the seeded model assertion does not.
+modified (an extra snap stays out of the signed model). The trust
+model is "the manifest author pins an exact snap set and verifies the
+image out of band."
+
+This produces a correct, complete seed: an arm64 `signed`-grade build
+with extra-snaps yields an image whose `seed.manifest`, `options.yaml`,
+`systems/<label>/snaps/`, and `assertions/extra-snaps` all contain the
+extra snaps, while the seeded model assertion does not. **However, the
+extra snaps are not installed on the booted device** — see
+[Status & open issues](#status--open-issues). The fix for that is
+device-side and out of scope for this repo.
+
+### `image/options.go` + `image_linux.go` (`SnapDownloadCacheDir`)
+
+A bandwidth optimisation for the `SnapDownloadURL` path, which
+otherwise re-downloads every snap on every build (it bypasses snapd's
+tooling store, so there is no built-in cache).
+
+- `image.Options.SnapDownloadCacheDir string` (`image/options.go`),
+  threaded onto `imageSeeder`.
+- `downloadSnapsViaURLHook` checks `<dir>/<name>_<rev>_<arch>.snap`
+  before calling the URL hook: on hit it skips the GET and copies the
+  cached blob into the seed; on miss it downloads via a sibling
+  `.tmp` file and renames into place (`fetchSnapViaURLHook`), so an
+  entry only ever exists once complete (crash/concurrency safe).
+- The caller scopes the dir per store and manages its lifetime.
+  Integrity is unaffected: the seedwriter still verifies each blob's
+  `snap-revision` sha3-384 downstream, so a stale/wrong cache entry is
+  rejected, not seeded.
 
 ### What stays unchanged in snapd
 
@@ -240,6 +261,10 @@ fork ("m2cp", meaning the Ubuntu Core family).
     assertions and returns a resolver for `image.Options.SnapIDForName`
     (needed to stamp the snap-id of extra snaps)
   - `manifestStageDir` — workdir layout for the model.assert file
+  - `configureSnapDownloadCache` / `pruneStaleCacheFiles` — set up the
+    per-store blob cache under `~/.liot-image/cache/<sha256(storeURL)>/`
+    (for `image.Options.SnapDownloadCacheDir`) and delete cached blobs
+    not modified today
   - Helpers: `writeM2cpStdout`, `describeAssertion`,
     `redactSignedURL`, `refPrimaryKeyHeaders`,
     `configureStoreURLFromM2cp` (legacy, leftover; the URL hook makes
@@ -267,6 +292,7 @@ fork ("m2cp", meaning the Ubuntu Core family).
   - `manifestSnapURL func(name, revision, snapID) (string, error)`
   - `manifestAssertionRetrieve func(*asserts.Ref) (asserts.Assertion, error)`
   - `manifestSnapIDForName func(name string) (string, error)`
+  - `manifestSnapCacheDir string`
 
   And added the `prepareFromManifest()` call at the top of `Setup`
   when `Opts.Manifest` is set.
@@ -282,6 +308,8 @@ fork ("m2cp", meaning the Ubuntu Core family).
   - `SnapIDForName: snapStateMachine.manifestSnapIDForName` — resolves
     an extra snap's snap-id (not known from the model) for the URL-hook
     download path
+  - `SnapDownloadCacheDir: snapStateMachine.manifestSnapCacheDir` — the
+    per-store blob cache dir
   - Precedence check in `imageOptsSeedManifest` so
     `manifestSeedManifest` wins over the existing `Opts.Revisions`
     path
@@ -342,3 +370,95 @@ bash test-online-store/test.sh
 A passing run produces a bootable `.img` and a `seed.manifest` whose
 12 pinned revisions match the manifest input exactly (the same set
 of revisions as a vanilla install of the reference device).
+
+---
+
+## Status & open issues
+
+### Extra snaps: build side complete, device side OPEN
+
+**Goal:** ship snaps in a `signed`-grade image that are *not* in the
+model (the manifest's `extra-snaps`), installed at first boot with no
+manual step.
+
+**Build side — DONE and verified on real hardware.** The builder
+produces a correct, complete seed. Inspected on a booted arm64 device
+(image built with this builder, model grade `signed`):
+
+- `systems/<label>/options.yaml` lists every extra snap with its
+  snap-id and channel;
+- `systems/<label>/snaps/` holds each extra snap's blob;
+- `systems/<label>/assertions/extra-snaps` holds each extra snap's
+  `snap-declaration` + `snap-revision`; the publisher account resolves
+  via the device's compiled-in trust anchor (so it is correctly absent
+  from the seed);
+- the signed model assertion does **not** list the extra snaps (they
+  stay genuinely "extra").
+
+**Device side — NOT working. The extra snaps are seeded but never
+installed.** On the same device:
+
+- `snap list` shows only the 9 model snaps; none of the 5 extras
+  (`bluez`, `m2cp-coap`, `m2cp-coap-knorr`, `m2cp-config-knorr`,
+  `m2cp-vtg-net-lte-uart`).
+- `snap debug seeding` → `seeded: true`, no error.
+- `snap tasks 1` ("Initialize system state") contains install tasks
+  for the model snaps only. The extras have **zero tasks** — no
+  "Ensure prerequisites", no "Prepare snap". They were **never
+  enumerated** for installation (not a download/assertion/prereq
+  failure — the journal is clean).
+
+**Root cause.** Extra (non-model) snaps in `options.yaml` are a
+`dangerous`-grade concept in snapd. snapd's *designed* way to install a
+snap on a `signed` image is to list it in the model. We deliberately
+keep these snaps out of the model, so the **device's snapd seeding
+skips them** at `signed` grade. This is purely on-device behaviour;
+the image is correct.
+
+**Fix (out of scope for this repo).** The **snapd snap that runs on the
+device** must be patched to install all snaps present in the seed
+(model + `options.yaml` extras) regardless of model grade — the
+device-side counterpart to the build-side `AllowExtraSnaps`
+relaxation. The likely locations are the seed reader's extra-snap
+enumeration (`seed/seed20.go` `LoadMeta`/`ModeSnaps`) and first-boot
+seeding (`overlord/devicestate/firstboot.go`). The device snapd is
+built from a different (pre-divergence) line than the build-time fork,
+so the exact gate must be confirmed against that source. This work
+lives in the snapd-snap, not in ubuntu-image or the build-time fork.
+
+### Injecting a login user (`--user`): same two-gate shape
+
+m2cp can sign a `system-user` assertion for a model
+(`m2cp store system generate-system-user -u <name> -p <pass> -m <model>`,
+also `-e`/`-n`), and the builder can already inject any assertion via
+`--assertion <file>`. A `--user="name:pass"` flag would just wrap that.
+But, exactly like extra snaps, it is blocked at **both** layers and is
+only useful once **both** are relaxed:
+
+- **Build-time** (`image/image_linux.go`, `decodeExtraAssertions`):
+  rejects a `system-user` assertion when grade != dangerous, and
+  rejects any assertion carrying a `password`. → the builder won't put
+  it in the seed at signed grade.
+- **Install-time / device** (`overlord/devicestate/firstboot.go:505`,
+  `processAutoImportAssertions`): `if grade != dangerous { return nil }`
+  — the device only creates users from system-user assertions at
+  dangerous grade. → even a seeded assertion produces no user.
+
+So `--user` needs the build-side relaxation (our fork) **and** the
+device snapd patch (`firstboot.go:505`) — the same device-side effort
+as extra snaps. Whoever patches the snapd snap should bundle: (1)
+install `options.yaml` extras, and (2) relax `firstboot.go:505` for
+system-user creation; then one rebuilt snapd snap validates both extra
+snaps and the `--user` login in a single boot.
+
+### Uncommitted / unverified at time of writing
+
+- The `SnapDownloadCacheDir` cache (build-time fork + ubuntu-image) is
+  implemented and compiles but had **not** been verified for cache
+  *hits* on a live build.
+- The build-side `--user` relaxation and flag are **not** implemented
+  (waiting on the device-side snapd work, since it's useless alone).
+- The ubuntu-image cache wiring references `image.Options.SnapDownloadCacheDir`,
+  which lives only in the `liot-image` snapd branch (committed, not
+  pushed). Until that's pushed and `go.mod` is bumped, ubuntu-image
+  builds against it via `go.work`, not the pinned module version.

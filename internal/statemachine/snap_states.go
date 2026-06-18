@@ -42,6 +42,7 @@ func (stateMachine *StateMachine) prepareImage() error {
 		SnapDownloadURL:           snapStateMachine.manifestSnapURL,
 		AssertionRetrieve:         snapStateMachine.manifestAssertionRetrieve,
 		SnapIDForName:             snapStateMachine.manifestSnapIDForName,
+		SnapDownloadCacheDir:      snapStateMachine.manifestSnapCacheDir,
 		// In manifest mode the recipe pins an exact snap set, including
 		// extra-snaps not declared in the (signed) model. The user owns
 		// and verifies that set, so allow the seedwriter to include them

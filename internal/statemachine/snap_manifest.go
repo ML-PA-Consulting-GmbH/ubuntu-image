@@ -2,10 +2,13 @@ package statemachine
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -126,6 +129,12 @@ func (snapStateMachine *SnapStateMachine) prepareFromManifest() error {
 	}
 	snapStateMachine.manifestStoreURL = storeURL
 	snapStateMachine.manifest = m
+
+	cacheDir, err := configureSnapDownloadCache(storeURL)
+	if err != nil {
+		return err
+	}
+	snapStateMachine.manifestSnapCacheDir = cacheDir
 
 	builtBy, err := fetchM2cpBuiltBy()
 	if err != nil {
@@ -322,6 +331,68 @@ func configureStoreURLFromM2cp() (string, error) {
 		return "", fmt.Errorf("setting SNAPPY_FORCE_API_URL: %w", err)
 	}
 	return base, nil
+}
+
+// configureSnapDownloadCache sets up the per-store snap blob cache
+// under ~/.liot-image/cache and returns its store-scoped directory,
+// which becomes image.Options.SnapDownloadCacheDir so the snapd
+// URL-hook download path reuses blobs across builds (saving bandwidth
+// during repeated builds). Entries are keyed by the immutable
+// (name, revision, arch); the per-store subdir -- named after a hash
+// of the store base URL -- keeps blobs from different stores apart,
+// since revision numbers are store-relative. Stale entries (not from
+// today) are pruned first to bound growth; re-downloading a pruned
+// blob is always safe (a revision's bytes are immutable, and snapd
+// re-verifies the sha3 regardless).
+func configureSnapDownloadCache(storeBaseURL string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("locating home dir for snap cache: %w", err)
+	}
+	root := filepath.Join(home, ".liot-image", "cache")
+	if removed, err := pruneStaleCacheFiles(root); err != nil {
+		// Non-fatal: a cache we cannot prune is still usable.
+		fmt.Printf("=> warning: pruning snap cache %s: %v\n", root, err)
+	} else if removed > 0 {
+		fmt.Printf("=> snap cache: pruned %d stale blob(s)\n", removed)
+	}
+	sum := sha256.Sum256([]byte(storeBaseURL))
+	dir := filepath.Join(root, hex.EncodeToString(sum[:]))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("creating snap cache dir %q: %w", dir, err)
+	}
+	fmt.Printf("=> snap download cache: %s (store-scoped)\n", dir)
+	return dir, nil
+}
+
+// pruneStaleCacheFiles removes cached files under root whose mtime is
+// not today, across every store subdir, and returns the count removed.
+// A missing root is not an error (first build).
+func pruneStaleCacheFiles(root string) (int, error) {
+	if _, err := os.Stat(root); os.IsNotExist(err) {
+		return 0, nil
+	}
+	today := time.Now().Format("2006-01-02")
+	removed := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		if info.ModTime().Format("2006-01-02") != today {
+			if rerr := os.Remove(path); rerr == nil {
+				removed++
+			}
+		}
+		return nil
+	})
+	return removed, err
 }
 
 type userStatusResponse struct {

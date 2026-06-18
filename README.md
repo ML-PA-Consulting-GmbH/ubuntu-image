@@ -108,6 +108,7 @@ model:
 # the manifest nor env supplies a value, "not set" is written.
 build:
   version: "1.2.3"
+  release: "5.2.2"                   # optional: release-bundle version the recipe shipped in
   commit: "abc1234de56789f0fedcba0123456789abcdef01"
   repo: "github.com/foo/bar"
 
@@ -136,11 +137,20 @@ snaps:
 # OPTIONAL: snaps not declared by the model but still seeded into
 # the image. Only name + version are needed (these aren't part of
 # the model, so no `type`). Treated by the seedwriter as additional
-# snaps; they end up in the image alongside the model-declared ones.
+# snaps; they are written into the seed alongside the model-declared
+# ones.
 extra-snaps:
   - name: htop
     version: "3.0.5"
 ```
+
+> **Note on `extra-snaps` and grade.** The builder seeds extra snaps
+> correctly at any grade (blob + `options.yaml` + assertions). But on a
+> `signed`/`secured` device they are currently **seeded but not
+> installed** at first boot — the on-device snapd only installs
+> non-model `options.yaml` snaps at `dangerous` grade. Installing them
+> on a signed image needs a device-side snapd change. See
+> *Status & open issues* in `MODIFICATIONS.md`.
 
 The recipe is meant to be self-contained: given the file and an
 active m2cp session, the same artifact rebuilds with no additional
@@ -173,7 +183,7 @@ pipeline itself, so the naming holds however the builder is invoked.
 
 ## build.yaml contents
 
-The builder writes a stable schema with 12 keys; unknown values
+The builder writes a stable schema with 13 keys; unknown values
 become `"not set"` so the shape is the same on every image:
 
 | key | source |
@@ -187,6 +197,7 @@ become `"not set"` so the shape is the same on every image:
 | `arch` | from the recipe |
 | `date` | UTC ISO 8601 at build start |
 | `version` | `$BUILD_VERSION`, else `build.version` from recipe, else `"not set"` |
+| `release` | `$BUILD_RELEASE`, else `build.release` from recipe, else `"not set"` |
 | `commit` | `$BUILD_COMMIT`, else `build.commit` from recipe, else `"not set"` |
 | `repo` | `$BUILD_REPO`, else `build.repo` from recipe, else `"not set"` |
 | `grade` | from `model.grade` in the recipe |

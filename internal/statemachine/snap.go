@@ -72,6 +72,12 @@ type SnapStateMachine struct {
 	// path can stamp the snap-id of extra snaps (not declared in the
 	// model) from the prefetched snap-declarations.
 	manifestSnapIDForName func(name string) (string, error)
+
+	// manifestSnapCacheDir, when set by the --manifest pipeline,
+	// becomes image.Options.SnapDownloadCacheDir: a per-store
+	// directory under ~/.liot-image/cache the URL-hook download path
+	// reuses snap blobs from across builds.
+	manifestSnapCacheDir string
 }
 
 // Setup assigns variables and calls other functions that must be executed before Run().
