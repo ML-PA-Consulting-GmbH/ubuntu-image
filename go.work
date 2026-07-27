@@ -1,0 +1,6 @@
+go 1.26.4
+
+use (
+	.
+	/home/florian.metzger-noel/r/snapd
+)

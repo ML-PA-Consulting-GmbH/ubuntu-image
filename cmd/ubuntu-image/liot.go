@@ -136,7 +136,6 @@ See README.md for the recipe schema.
 //   - LiotPreflightContinue: preflight passed; caller hands off to
 //     the state-machine pipeline through the rewritten args.
 func liotPreflightAndBanner(recipePath string, dryRun, xz bool) LiotPreflightStatus {
-
 	fmt.Fprintln(os.Stderr, "[L-IoT Image Builder]")
 	if dryRun {
 		fmt.Fprintln(os.Stderr, "(dry-run mode: preflight only; nothing will be pushed or built)")
@@ -279,7 +278,7 @@ func writeModelSidecar(recipePath, dst string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, body, 0644)
+	return os.WriteFile(dst, body, 0o644)
 }
 
 // liotModelDryRun renders the recipe's model.json and asks m2cp
@@ -418,16 +417,18 @@ func listAppstoreSnapNames(arch string) (map[string]bool, error) {
 }
 
 type m2cpStatusJSON struct {
-	Output struct {
-		Status  string `json:"status"`
-		Session struct {
-			Store  string `json:"store"`
-			Tenant struct {
-				TenantName string `json:"tenantName"`
-				Alias      string `json:"alias"`
-			} `json:"tenant"`
-		} `json:"session"`
-	} `json:"output"`
+	Output m2cpStatusJSONNew `json:"output"`
+}
+
+type m2cpStatusJSONNew struct {
+	Status  string `json:"status"`
+	Session struct {
+		Store  string `json:"store"`
+		Tenant struct {
+			TenantName string `json:"tenantName"`
+			Alias      string `json:"alias"`
+		} `json:"tenant"`
+	} `json:"session"`
 }
 
 func m2cpSessionStatus() (m2cpUserStatus, error) {
@@ -439,8 +440,14 @@ func m2cpSessionStatus() (m2cpUserStatus, error) {
 		return m2cpUserStatus{}, fmt.Errorf("m2cp user status --json: %w", err)
 	}
 	var raw m2cpStatusJSON
-	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
-		return m2cpUserStatus{}, fmt.Errorf("parsing m2cp status: %w", err)
+	var rawNew m2cpStatusJSONNew
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil || raw.Output.Status == "" {
+		if err := json.Unmarshal(stdout.Bytes(), &rawNew); err != nil {
+			return m2cpUserStatus{}, fmt.Errorf("parsing m2cp status: %w", err)
+		}
+		raw = m2cpStatusJSON{
+			Output: rawNew,
+		}
 	}
 	tenant := raw.Output.Session.Tenant.Alias
 	if tenant == "" {
