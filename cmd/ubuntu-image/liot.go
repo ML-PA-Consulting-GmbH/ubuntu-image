@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -71,6 +70,45 @@ const (
 	LiotPreflightDryRun
 )
 
+// liotVersion resolves the builder version: the value stamped in at
+// build time via ldflags, else the snap environment, else a marker so
+// the banner never prints a dangling name with nothing after it.
+// Assigns back to Version so everything downstream (--version, the
+// seed manifest's builder-version) sees the resolved value.
+func liotVersion() string {
+	if Version == "" {
+		Version = os.Getenv("SNAP_VERSION")
+	}
+	if Version == "" {
+		return "unknown-version"
+	}
+	return Version
+}
+
+// liotPrintStartupBanner prints the tool name and version on stderr at
+// the start of every invocation, whatever the user asked for -- a
+// build, a dry-run, quick help, a hidden subcommand. Build logs and
+// customer bug reports then always carry the version that produced
+// them, without anyone having to think to run --version. Goes to
+// stderr so `--model` and friends keep a clean stdout.
+//
+// Skipped only for `--version` itself, whose whole job is this line.
+func liotPrintStartupBanner() {
+	fmt.Fprintf(os.Stderr, "[L-IoT Image Builder %s]\n", liotVersion())
+}
+
+// liotVersionOnly reports whether the invocation is a bare --version
+// request, so the startup banner can stand down and let that path own
+// the output.
+func liotVersionOnly() bool {
+	for _, a := range os.Args[1:] {
+		if a == "--version" {
+			return true
+		}
+	}
+	return false
+}
+
 // liotMaybeShowQuickHelp prints a short L-IoT-specific usage message
 // when the user invoked the tool with no arguments or with -h/--help.
 // Returns true if the message was printed and the caller should exit.
@@ -89,7 +127,9 @@ func liotMaybeShowQuickHelp() bool {
 	return false
 }
 
-const liotUsage = `L-IoT Image Builder for Ubuntu Core based systems
+// The tool name and version are already on screen from the startup
+// banner, so the usage text starts straight at the invocation.
+const liotUsage = `Image builder for Ubuntu Core based systems
 
 Usage:
   liot-image [--dry-run] [--xz] [--model] <recipe.yaml>
@@ -136,7 +176,6 @@ See README.md for the recipe schema.
 //   - LiotPreflightContinue: preflight passed; caller hands off to
 //     the state-machine pipeline through the rewritten args.
 func liotPreflightAndBanner(recipePath string, dryRun, xz bool) LiotPreflightStatus {
-	fmt.Fprintln(os.Stderr, "[L-IoT Image Builder]")
 	if dryRun {
 		fmt.Fprintln(os.Stderr, "(dry-run mode: preflight only; nothing will be pushed or built)")
 	}
@@ -155,7 +194,9 @@ func liotPreflightAndBanner(recipePath string, dryRun, xz bool) LiotPreflightSta
 		}
 	}
 
-	session, err := m2cpSessionStatus()
+	// Shared with the build pipeline's store-URL discovery, so both
+	// tolerate the same set of m2cp output formats.
+	session, err := commands.M2cpSessionStatus()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s session check failed: %v\n", commands.M2cpCLI, err)
 		return LiotPreflightFailed
@@ -324,15 +365,6 @@ func hasOutputDirFlag(args []string) bool {
 	return false
 }
 
-// m2cpUserStatus is the slim view of `m2cp user status --json` we
-// need for preflight: enough to tell the user where they're logged
-// in and to refuse to run when they aren't.
-type m2cpUserStatus struct {
-	LoggedIn bool
-	Tenant   string
-	StoreURL string
-}
-
 // liotPreflightSnapsExist verifies, before any push, that every
 // snap the recipe references already exists in the appstore for
 // the target architecture. A single `m2cp store snap list -a <arch>
@@ -412,54 +444,6 @@ func listAppstoreSnapNames(arch string) (map[string]bool, error) {
 	out := map[string]bool{}
 	for _, d := range resp.Output.SnapDeclarations {
 		out[d.SnapName] = true
-	}
-	return out, nil
-}
-
-type m2cpStatusJSON struct {
-	Output m2cpStatusJSONNew `json:"output"`
-}
-
-type m2cpStatusJSONNew struct {
-	Status  string `json:"status"`
-	Session struct {
-		Store  string `json:"store"`
-		Tenant struct {
-			TenantName string `json:"tenantName"`
-			Alias      string `json:"alias"`
-		} `json:"tenant"`
-	} `json:"session"`
-}
-
-func m2cpSessionStatus() (m2cpUserStatus, error) {
-	cmd := exec.Command(commands.M2cpCLI, "user", "status", "--json")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return m2cpUserStatus{}, fmt.Errorf("m2cp user status --json: %w", err)
-	}
-	var raw m2cpStatusJSON
-	var rawNew m2cpStatusJSONNew
-	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil || raw.Output.Status == "" {
-		if err := json.Unmarshal(stdout.Bytes(), &rawNew); err != nil {
-			return m2cpUserStatus{}, fmt.Errorf("parsing m2cp status: %w", err)
-		}
-		raw = m2cpStatusJSON{
-			Output: rawNew,
-		}
-	}
-	tenant := raw.Output.Session.Tenant.Alias
-	if tenant == "" {
-		tenant = raw.Output.Session.Tenant.TenantName
-	}
-	out := m2cpUserStatus{
-		LoggedIn: raw.Output.Status == "logged in",
-		Tenant:   tenant,
-		StoreURL: raw.Output.Session.Store,
-	}
-	if out.LoggedIn && out.StoreURL == "" {
-		return out, errors.New("m2cp reports logged in but no store URL")
 	}
 	return out, nil
 }

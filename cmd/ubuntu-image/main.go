@@ -115,6 +115,16 @@ func parseFlags(parser *flags.Parser, restoreStdout, restoreStderr func(), stdou
 }
 
 func main() { //nolint: gocyclo
+	// Name + version first, before any other output, so every log
+	// carries the version that produced it. `--version` owns its own
+	// output and skips the banner.
+	if !liotVersionOnly() {
+		liotPrintStartupBanner()
+	}
+	// The banner resolved Version (build-time stamp or SNAP_VERSION),
+	// so the seed manifest's builder-version picks it up here. Left
+	// empty when nothing supplied one; the manifest maps that to
+	// its own not-set marker.
 	commands.BuilderVersion = Version
 
 	// L-IoT bare-recipe form: `ubuntu-image <recipe.yaml>` runs
@@ -198,11 +208,9 @@ func main() { //nolint: gocyclo
 
 	// in case user only requested version number, print and exit
 	if commonOpts.Version {
-		// we expect Version to be supplied at build time or fetched from the snap environment
-		if Version == "" {
-			Version = os.Getenv("SNAP_VERSION")
-		}
-		fmt.Printf("liot-image %s\n", Version)
+		// Version comes from the build-time stamp or the snap
+		// environment; on stdout here so scripts can consume it.
+		fmt.Printf("liot-image %s\n", liotVersion())
 		osExit(0)
 		return
 	}

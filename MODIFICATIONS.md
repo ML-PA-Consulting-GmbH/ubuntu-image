@@ -243,7 +243,28 @@ fork ("m2cp", meaning the Ubuntu Core family).
   - Helpers: `writeM2cpStdout`, `describeAssertion`,
     `redactSignedURL`, `refPrimaryKeyHeaders`,
     `configureStoreURLFromM2cp` (legacy, leftover; the URL hook makes
-    `SNAPPY_FORCE_API_URL` unused but harmless)
+    `SNAPPY_FORCE_API_URL` unused but harmless — it still supplies the
+    appstore URL recorded in `build.yaml`, and now reads it through
+    `commands.M2cpSessionStatus` instead of its own parse)
+
+- **`internal/commands/m2cp_status.go`** — the one reader of
+  `m2cp user status --json`: `M2cpSessionStatus()` (shell out) and
+  `parseM2cpUserStatus()` (parse), returning `M2cpUserStatus`
+  (`LoggedIn`, `Tenant`, `StoreURL`). Both consumers — the
+  `liot-image` preflight and the pipeline's store-URL discovery — go
+  through it, so neither can drift behind an m2cp output-format
+  change. Tolerates both known shapes: older m2cp wraps the payload
+  in an `output` object, current m2cp emits it flat. Detection looks
+  for the wrapper key (case-insensitively, since `encoding/json`
+  would have matched `Output` against the old struct tag too) rather
+  than guessing from a missing field, so an incomplete payload
+  produces a real error instead of being silently reparsed as the
+  other format. Further tolerance: the status string is folded before
+  comparison (`logged in` / `logged-in` / `loggedIn` all match, while
+  `logged out` still doesn't), tenant falls back
+  `alias` → `tenant-alias` → `tenantName` → `tenant-name`, and a
+  payload with no status field but a live store URL counts as a
+  session. `m2cp_status_test.go` pins every one of those cases.
 
 - **`test-online-store/manifest.yaml`** — concrete pin for
   `edge-imx93-uc-vtg` rev 1, 12 snaps at the revisions of the vanilla
@@ -285,6 +306,22 @@ fork ("m2cp", meaning the Ubuntu Core family).
   - Precedence check in `imageOptsSeedManifest` so
     `manifestSeedManifest` wins over the existing `Opts.Revisions`
     path
+
+- **`cmd/ubuntu-image/main.go`** + **`cmd/ubuntu-image/liot.go`** —
+  the tool prints `[L-IoT Image Builder <version>]` on stderr as the
+  first line of *every* invocation (build, `--dry-run`, `--model`,
+  quick help, hidden subcommands), not just under `--version`, so
+  build logs and customer bug reports always carry the version that
+  produced them. `liotVersion()` is the single resolver — build-time
+  `-X main.Version` stamp, else `SNAP_VERSION` from the snap
+  environment, else `unknown-version` — and both the banner,
+  `--version`, and `commands.BuilderVersion` (the seed manifest's
+  `builder-version`) read through it. The banner is suppressed for a
+  bare `--version`, whose own stdout line is the same information, and
+  it goes to stderr so `--model`'s JSON stdout stays clean. The
+  redundant `[L-IoT Image Builder]` header the preflight used to print,
+  and the name headline of the quick-help text, were dropped in favour
+  of it.
 
 - **`.gitignore`** — ignore `test-online-store/work/`,
   `test-online-store/out/`, and the locally-built `ubuntu-image`
@@ -332,6 +369,15 @@ revision each version resolved to, and which URL served each blob.
 - **Auto `AllowSnapdKernelMismatch` in manifest mode.** Pinning is
   the user explicitly declaring intent; snapd's defensive version
   check is redundant.
+- **One parser per m2cp output.** m2cp's JSON shape is outside our
+  control and has already changed once. Every payload we read gets a
+  single tolerant parser (`internal/commands/m2cp_status.go` for
+  `user status`) that both consumers call, so a format change is one
+  fix in one place instead of a hunt for the copy that wasn't
+  hardened.
+- **Version in every log.** The name+version banner prints
+  unconditionally at startup; a build log without a version is not
+  worth much when a customer reports a bad image.
 
 ### Verifying
 

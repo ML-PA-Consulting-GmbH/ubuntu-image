@@ -297,18 +297,11 @@ func redactSignedURL(u string) string {
 // returns the snap-store base URL so it can be recorded in build.yaml.
 func configureStoreURLFromM2cp() (string, error) {
 	fmt.Printf("=> discovering store URL: m2cp user status --json\n")
-	cmd := exec.Command(commands.M2cpCLI, "user", "status", "--json")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("m2cp user status --json: %w", err)
+	session, err := commands.M2cpSessionStatus()
+	if err != nil {
+		return "", err
 	}
-	var resp userStatusResponse
-	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
-		return "", fmt.Errorf("parsing m2cp user status JSON: %w", err)
-	}
-	graphqlURL := resp.Output.Session.Store
+	graphqlURL := session.StoreURL
 	if graphqlURL == "" {
 		return "", fmt.Errorf("m2cp user status returned empty store URL (not logged in?)")
 	}
@@ -322,14 +315,6 @@ func configureStoreURLFromM2cp() (string, error) {
 		return "", fmt.Errorf("setting SNAPPY_FORCE_API_URL: %w", err)
 	}
 	return base, nil
-}
-
-type userStatusResponse struct {
-	Output struct {
-		Session struct {
-			Store string `json:"store"`
-		} `json:"session"`
-	} `json:"output"`
 }
 
 // fetchM2cpBuiltBy pulls the developer identity (from
