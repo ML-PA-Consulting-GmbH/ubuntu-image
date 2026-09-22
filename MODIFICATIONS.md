@@ -325,6 +325,15 @@ fork ("m2cp", meaning the Ubuntu Core family).
   ubuntu-image, runs it against the manifest, dumps the resulting
   `seed.manifest` for inspection.
 
+- **`release.sh`** — cuts a release. Prints the last tag and every
+  commit since it, proposes a patch bump (taking the `+up` suffix from
+  `snapcraft.yaml`, so an upstream bump reaches the tag by itself),
+  refuses a dirty tree, a tag that exists here or on origin, and a HEAD
+  that is already tagged, builds once, then pushes the branch and the
+  tag — which `.github/workflows/release.yml` turns into a published
+  `liot-image` binary. Takes a full tag or `patch` / `minor` / `major`
+  as the argument, with `--dry-run` and `-y`.
+
 ### Modified files
 
 - **`internal/commands/snap.go`** — added the `--manifest` flag to
