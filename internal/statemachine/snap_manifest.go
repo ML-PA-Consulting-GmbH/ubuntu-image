@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -82,8 +82,7 @@ func (snapStateMachine *SnapStateMachine) prepareFromManifest() error {
 	}
 	snapStateMachine.manifestModelRevision = revision
 
-	fmt.Printf("=> fetching model assertion: m2cp store model assertion m2cp %s %d\n",
-		m.Model.Name, revision)
+	fmt.Printf("=> fetching model assertion (%s revision %d)\n", m.Model.Name, revision)
 	modelPath := filepath.Join(stageDir, "model.assert")
 	if err := writeM2cpStdout(modelPath,
 		"store", "model", "assertion", "m2cp", m.Model.Name, strconv.Itoa(revision),
@@ -191,15 +190,11 @@ func prefetchAssertionsViaM2cp(arch string, pins []commands.OnlineManifestSnap, 
 		if rev.Unset() {
 			return nil, nil, fmt.Errorf("internal: no allowed revision pinned for %q", p.Name)
 		}
-		cmd := exec.Command(commands.M2cpCLI, "store", "snap", "assertion", p.Name, arch, "-r", rev.String())
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			return nil, nil, fmt.Errorf("m2cp store snap assertion %s %s -r %s: %w (stderr: %s)",
-				p.Name, arch, rev.String(), err, strings.TrimSpace(stderr.String()))
+		out, err := commands.M2cpRun("store", "snap", "assertion", p.Name, arch, "-r", rev.String())
+		if err != nil {
+			return nil, nil, err
 		}
-		dec := asserts.NewDecoder(&stdout)
+		dec := asserts.NewDecoder(bytes.NewReader(out.Stdout))
 		added := 0
 		for {
 			a, err := dec.Decode()
@@ -218,10 +213,15 @@ func prefetchAssertionsViaM2cp(arch string, pins []commands.OnlineManifestSnap, 
 		fmt.Printf("   %-32s %-10s -> %d assertions indexed\n", p.Name, p.Version, added)
 	}
 	fmt.Printf("   total assertions in index: %d\n", len(idx))
+	if err := verifyAssertionIndex(idx); err != nil {
+		return nil, nil, err
+	}
 	retrieve := func(ref *asserts.Ref) (asserts.Assertion, error) {
 		if a, ok := idx[ref.Unique()]; ok {
 			return a, nil
 		}
+		fmt.Fprintf(os.Stderr, "   !! %s is absent from the prefetched index (%d assertions from m2cp) and no other source is consulted\n",
+			ref, len(idx))
 		return nil, &asserts.NotFoundError{Type: ref.Type, Headers: refPrimaryKeyHeaders(ref)}
 	}
 	snapIDForName := func(name string) (string, error) {
@@ -231,6 +231,312 @@ func prefetchAssertionsViaM2cp(arch string, pins []commands.OnlineManifestSnap, 
 		return "", fmt.Errorf("no prefetched snap-declaration for %q", name)
 	}
 	return retrieve, snapIDForName, nil
+}
+
+// verifyAssertionIndex walks the prerequisites of every prefetched
+// assertion -- each one's signing key, plus the refs the assertion
+// type itself declares (a snap-declaration names its publisher
+// account, a snap-revision its developer account and declaration) --
+// and collects the refs that neither the index nor snapd's trust
+// anchors satisfy. Missing accounts and account-keys are then fetched
+// from the appstore directly; whatever remains stops the build here.
+//
+// The check runs at preparation time because the fetcher hits the same
+// wall three minutes later, after every blob has been downloaded, and
+// reports it as a bare "account (knorr) not found" from deep inside
+// snapd. Here the reference is still attached to the snaps that
+// reached for it, so the message names them and says where the
+// assertion has to come from.
+func verifyAssertionIndex(idx map[string]asserts.Assertion) error {
+	missing := unsatisfiedRefs(idx)
+	if len(missing) == 0 {
+		fmt.Printf("   every prerequisite of the indexed assertions resolves\n")
+		return nil
+	}
+	if fetchMissingFromAppstore(idx, missing) > 0 {
+		missing = unsatisfiedRefs(idx)
+		if len(missing) == 0 {
+			fmt.Printf("   every prerequisite of the indexed assertions resolves\n")
+			return nil
+		}
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "the appstore did not supply %d assertion(s) the seed needs:\n\n", len(missing))
+	for _, m := range missing {
+		fmt.Fprintf(&b, "  %s\n    referenced by: %s\n", m.ref, strings.Join(dedupe(m.referrers), ", "))
+	}
+	b.WriteString("\n")
+	b.WriteString(explainMissingAssertions(missing))
+	return errors.New(b.String())
+}
+
+// missingRef is a reference nothing in reach satisfies, with the
+// assertions that reached for it.
+type missingRef struct {
+	ref       *asserts.Ref
+	referrers []string
+}
+
+// unsatisfiedRefs returns the references the index leaves open, sorted
+// by reference so the report reads the same way twice.
+func unsatisfiedRefs(idx map[string]asserts.Assertion) []missingRef {
+	provided := map[string]bool{}
+	for u := range idx {
+		provided[u] = true
+	}
+	for _, a := range sysdb.Trusted() {
+		provided[a.Ref().Unique()] = true
+	}
+
+	snapNameByID := map[string]string{}
+	for _, a := range idx {
+		if decl, ok := a.(*asserts.SnapDeclaration); ok {
+			snapNameByID[decl.SnapID()] = decl.SnapName()
+		}
+	}
+
+	byUnique := map[string]*missingRef{}
+	for _, a := range idx {
+		refs := append([]*asserts.Ref{
+			{Type: asserts.AccountKeyType, PrimaryKey: []string{a.SignKeyID()}},
+		}, a.Prerequisites()...)
+		for _, ref := range refs {
+			u := ref.Unique()
+			if provided[u] {
+				continue
+			}
+			m, seen := byUnique[u]
+			if !seen {
+				m = &missingRef{ref: ref}
+				byUnique[u] = m
+			}
+			m.referrers = append(m.referrers, describeReferrer(a, snapNameByID))
+		}
+	}
+
+	out := make([]missingRef, 0, len(byUnique))
+	for _, m := range byUnique {
+		sort.Strings(m.referrers)
+		out = append(out, *m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ref.Unique() < out[j].ref.Unique() })
+	return out
+}
+
+// fetchMissingFromAppstore asks the appstore's GraphQL API for each
+// missing account and account-key, and adds what comes back to the
+// index. Whatever it adds reaches the seed the ordinary way, through
+// AssertionRetrieve, so the device resolves the same chain at boot.
+//
+// A reference the store declines to serve is reported and left in
+// place: the error that follows names it with the snaps that need it.
+func fetchMissingFromAppstore(idx map[string]asserts.Assertion, missing []missingRef) int {
+	added := 0
+	for _, m := range missing {
+		switch m.ref.Type {
+		case asserts.AccountType, asserts.AccountKeyType:
+		default:
+			continue
+		}
+		fmt.Printf("=> %s is missing; asking the appstore for it directly\n", m.ref)
+		a, err := appstoreAssertionFetch(m.ref)
+		if err != nil {
+			fmt.Printf("   %v\n", err)
+			continue
+		}
+		idx[a.Ref().Unique()] = a
+		describeAssertion(a, "-> seed (fetched from the appstore)")
+		added++
+	}
+	return added
+}
+
+// assertionReadAllScope is the appstore access right that governs
+// reading assertions beyond one's own tenant (the permission levels
+// are documented in m2cp's go/graphql-examples.md as All / Tenant /
+// Own).
+const assertionReadAllScope = "Assertion.Read.All"
+
+// assertionByTypeQuery is the appstore's generic assertion lookup, the
+// only route to an account assertion: the tenant-scoped bundles
+// (`store system assertion`) carry the caller's own account, and a
+// snap bundle (`store snap assertion`) carries the snap-revision and
+// snap-declaration alone. m2cp wraps this same query internally
+// (`go/graphql/assertion.go`, AssertionsByTypeAndStringFilter) and
+// uses it for models; until a CLI command exposes it for accounts,
+// the builder asks for itself.
+const assertionByTypeQuery = `query AssertionByType($assertionType: String, $filter: String) {
+  assertions(where: {
+    assertionType: { assertionTypeName: { eq: $assertionType } },
+    and: { assertionBody: { contains: $filter } }
+  }) {
+    items { assertionBody }
+  }
+}`
+
+// appstoreAssertionFetch resolves one assertion reference through the
+// appstore's GraphQL API. Stubbed in tests.
+var appstoreAssertionFetch = func(ref *asserts.Ref) (asserts.Assertion, error) {
+	assertionType, filter, err := assertionQueryFor(ref)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Assertions struct {
+			Items []struct {
+				AssertionBody string `json:"assertionBody"`
+			} `json:"items"`
+		} `json:"assertions"`
+	}
+	err = commands.M2cpGraphQL(fmt.Sprintf("assertions: %s", ref), assertionByTypeQuery,
+		map[string]any{"assertionType": assertionType, "filter": filter}, &resp)
+	if err != nil {
+		var queryErr *commands.GraphQLError
+		if errors.As(err, &queryErr) && queryErr.Unauthorized() {
+			return nil, fmt.Errorf("%w\n   %s", err, verifyScopeHint())
+		}
+		return nil, err
+	}
+	// The filter matches assertion bodies by substring, so the answer
+	// can hold near misses (account-id "knorr-test" contains
+	// "knorr"); the reference decides.
+	for _, item := range resp.Assertions.Items {
+		a, err := asserts.Decode(normalizeAssertionBody(item.AssertionBody))
+		if err != nil {
+			continue
+		}
+		if a.Ref().Unique() == ref.Unique() {
+			return a, nil
+		}
+	}
+	// An empty answer reads the same whether the store holds no such
+	// account or filters it out of this session's reads, so the
+	// message offers both and asks for one check rather than naming a
+	// cause it cannot see. It arrives as a successful 200, so the
+	// query is echoed here rather than by the transport.
+	commands.EchoFailedQuery(assertionByTypeQuery, map[string]any{"assertionType": assertionType, "filter": filter})
+	return nil, fmt.Errorf("the appstore served no %s (%d assertion(s) matched %q)\n   %s",
+		ref, len(resp.Assertions.Items), filter, verifyScopeHint())
+}
+
+// verifyScopeHint asks the operator to check the one access right that
+// governs this read, without asserting that it is what went wrong.
+func verifyScopeHint() string {
+	return fmt.Sprintf("please verify that your session may read assertions of other tenants "+
+		"(the %s scope); %s user roles list prints this session's scopes",
+		assertionReadAllScope, commands.M2cpCLI)
+}
+
+// assertionQueryFor maps a reference to the type name and body
+// substring that find it.
+func assertionQueryFor(ref *asserts.Ref) (assertionType, filter string, err error) {
+	if len(ref.PrimaryKey) == 0 {
+		return "", "", fmt.Errorf("reference %s carries no primary key", ref)
+	}
+	switch ref.Type {
+	case asserts.AccountType:
+		return "account", "account-id: " + ref.PrimaryKey[0], nil
+	case asserts.AccountKeyType:
+		return "account-key", "public-key-sha3-384: " + ref.PrimaryKey[0], nil
+	default:
+		return "", "", fmt.Errorf("no appstore query for %s assertions", ref.Type.Name)
+	}
+}
+
+// normalizeAssertionBody trims trailing whitespace and leaves exactly
+// one newline: snapd's decoder splits content from signature at the
+// last "\n\n", so a blank line at the end would make it read the
+// signature as the body.
+func normalizeAssertionBody(body string) []byte {
+	return append(bytes.TrimRight([]byte(body), "\r\n \t"), '\n')
+}
+
+// describeReferrer names an assertion the way the recipe author knows
+// it -- by snap -- falling back to the assertion reference.
+func describeReferrer(a asserts.Assertion, snapNameByID map[string]string) string {
+	switch v := a.(type) {
+	case *asserts.SnapDeclaration:
+		return fmt.Sprintf("snap-declaration %s", v.SnapName())
+	case *asserts.SnapRevision:
+		name := snapNameByID[v.SnapID()]
+		if name == "" {
+			name = v.SnapID()
+		}
+		return fmt.Sprintf("snap-revision %s (r%d)", name, v.SnapRevision())
+	default:
+		return a.Ref().String()
+	}
+}
+
+func dedupe(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+// sessionTenant names the tenant the active m2cp session belongs to,
+// for error messages that turn on tenant scoping. A session lookup
+// that fails leaves the message generic, so a broken session never
+// masks the error being reported. Stubbed in tests.
+var sessionTenant = func() string {
+	st, err := commands.M2cpSessionStatus()
+	if err != nil {
+		return ""
+	}
+	return st.Tenant
+}
+
+// explainMissingAssertions writes the operator-facing half of the
+// error: what the appstore serves, why that leaves a gap, and what
+// closes it. Account assertions get the long form, because a
+// cross-tenant publisher is the case that actually occurs and the one
+// that costs an afternoon of guessing.
+func explainMissingAssertions(missing []missingRef) string {
+	var b strings.Builder
+	accounts := []string{}
+	for _, m := range missing {
+		if m.ref.Type == asserts.AccountType {
+			accounts = append(accounts, m.ref.PrimaryKey[0])
+		}
+	}
+	if len(accounts) == 0 {
+		fmt.Fprintf(&b, "Every assertion above is a prerequisite of one the appstore did serve,\n")
+		fmt.Fprintf(&b, "and the build resolves assertions from the appstore alone. Ask the\n")
+		fmt.Fprintf(&b, "appstore team why %s store snap assertion omits them.\n", commands.M2cpCLI)
+		return b.String()
+	}
+
+	tenant := "this session's tenant"
+	if t := sessionTenant(); t != "" {
+		tenant = fmt.Sprintf("%q", t)
+	}
+	fmt.Fprintf(&b, "Account assertions reach the build from one place only, and it is\n")
+	fmt.Fprintf(&b, "scoped to the tenant you are logged into (%s):\n\n", tenant)
+	fmt.Fprintf(&b, "  %s store system assertion      -> account + account-keys of your own tenant\n", commands.M2cpCLI)
+	fmt.Fprintf(&b, "  %s store snap assertion ...    -> snap-revision + snap-declaration only\n\n", commands.M2cpCLI)
+	fmt.Fprintf(&b, "So a snap published by another tenant (here: %s) arrives with a\n", strings.Join(accounts, ", "))
+	fmt.Fprintf(&b, "publisher the build cannot vouch for. The seed needs that account twice\n")
+	fmt.Fprintf(&b, "over: this build writes it into the seed's assertions/, and the device\n")
+	fmt.Fprintf(&b, "resolves it again at first boot (snap-bootstrap otherwise stops with\n")
+	fmt.Fprintf(&b, "\"cannot resolve prerequisite assertion: account (%s)\").\n\n", accounts[0])
+	fmt.Fprintf(&b, "The build also asked the store's GraphQL API for the account directly,\n")
+	fmt.Fprintf(&b, "with the query and the store's answer logged above this message.\n\n")
+	fmt.Fprintf(&b, "Two things are worth verifying before taking this further:\n")
+	fmt.Fprintf(&b, "  - that the account exists in this store at all;\n")
+	fmt.Fprintf(&b, "  - that your session may read assertions of other tenants (the %s\n", assertionReadAllScope)
+	fmt.Fprintf(&b, "    scope) -- %s user roles list prints this session's scopes.\n\n", commands.M2cpCLI)
+	fmt.Fprintf(&b, "To unblock the build, have the appstore serve the publisher account:\n")
+	fmt.Fprintf(&b, "flagged globally shared the way the shared app itself is, or included\n")
+	fmt.Fprintf(&b, "in the %s store snap assertion bundle.\n", commands.M2cpCLI)
+	return b.String()
 }
 
 func refPrimaryKeyHeaders(ref *asserts.Ref) map[string]string {
@@ -252,19 +558,13 @@ func buildSnapDownloadURL(arch string) func(name string, rev snap.Revision, snap
 	upperArch := strings.ToUpper(arch)
 	return func(name string, rev snap.Revision, snapID string) (string, error) {
 		revStr := rev.String()
-		fmt.Printf("=> URL: m2cp store app download %s %s %s --url\n", name, upperArch, revStr)
-		cmd := exec.Command(commands.M2cpCLI, "store", "app", "download", name, upperArch, revStr, "--url")
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("m2cp app download --url %s %s %s: %w (stderr: %s)",
-				name, upperArch, revStr, err, strings.TrimSpace(stderr.String()))
+		out, err := commands.M2cpRun("store", "app", "download", name, upperArch, revStr, "--url")
+		if err != nil {
+			return "", err
 		}
-		url := strings.TrimSpace(stdout.String())
+		url := strings.TrimSpace(string(out.Stdout))
 		if url == "" {
-			return "", fmt.Errorf("m2cp returned empty URL for %s %s (stderr: %s)",
-				name, revStr, strings.TrimSpace(stderr.String()))
+			return "", fmt.Errorf("m2cp returned an empty download URL for %s revision %s", name, revStr)
 		}
 		fmt.Printf("   -> %s\n", redactSignedURL(url))
 		return url, nil
@@ -296,7 +596,7 @@ func redactSignedURL(u string) string {
 // store client targets this appstore for the rest of the build, and
 // returns the snap-store base URL so it can be recorded in build.yaml.
 func configureStoreURLFromM2cp() (string, error) {
-	fmt.Printf("=> discovering store URL: m2cp user status --json\n")
+	fmt.Printf("=> discovering store URL\n")
 	session, err := commands.M2cpSessionStatus()
 	if err != nil {
 		return "", err
@@ -322,12 +622,9 @@ func configureStoreURLFromM2cp() (string, error) {
 // build.yaml. Format is "Display Name <email>" when both fields
 // are present, else whichever one we have.
 func fetchM2cpBuiltBy() (string, error) {
-	cmd := exec.Command(commands.M2cpCLI, "user", "info", "--json")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("m2cp user info --json: %w", err)
+	out, err := commands.M2cpRun("user", "info", "--json")
+	if err != nil {
+		return "", err
 	}
 	var resp struct {
 		Output struct {
@@ -335,7 +632,7 @@ func fetchM2cpBuiltBy() (string, error) {
 			Name  string `json:"developerAccountSshKeyname"`
 		} `json:"output"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal(out.Stdout, &resp); err != nil {
 		return "", fmt.Errorf("parsing m2cp user info: %w", err)
 	}
 	name := strings.TrimSpace(resp.Output.Name)
@@ -393,25 +690,17 @@ type modelPushResponse struct {
 // output.error is present. That way the caller sees the actual
 // server-side error message instead of a bare "exit status 1".
 func pushModelGetRevision(jsonPath, msg string) (int, error) {
-	fmt.Printf("=> m2cp store system model push -i --json %s %q\n", jsonPath, msg)
-	cmd := exec.Command(commands.M2cpCLI, "store", "system", "model", "push", "-i", "--json", jsonPath, msg)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	// Tee m2cp's stderr to our own: it carries the per-revision
-	// idempotent scan narration (the same diff --dry-run shows), which
-	// we want visible during a normal build too. The buffer copy is
-	// kept for error messages below.
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
-	runErr := cmd.Run()
+	fmt.Printf("=> pushing model (idempotent)\n")
+	out, runErr := commands.M2cpRun("store", "system", "model", "push", "-i", "--json", jsonPath, msg)
 
 	var resp modelPushResponse
-	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal(out.Stdout, &resp); err != nil {
 		if runErr != nil {
-			return 0, fmt.Errorf("m2cp push failed: %w (stdout=%q stderr=%q)",
-				runErr, strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()))
+			return 0, fmt.Errorf("m2cp push failed: %w (stdout=%q)",
+				runErr, strings.TrimSpace(string(out.Stdout)))
 		}
 		return 0, fmt.Errorf("parsing m2cp push response: %w (stdout=%q)",
-			err, strings.TrimSpace(stdout.String()))
+			err, strings.TrimSpace(string(out.Stdout)))
 	}
 	if resp.Output.Error != "" {
 		return 0, fmt.Errorf("m2cp: %s", resp.Output.Error)
@@ -419,10 +708,10 @@ func pushModelGetRevision(jsonPath, msg string) (int, error) {
 	if resp.Output.Revision <= 0 {
 		if runErr != nil {
 			return 0, fmt.Errorf("m2cp push failed: %w (raw=%q)",
-				runErr, strings.TrimSpace(stdout.String()))
+				runErr, strings.TrimSpace(string(out.Stdout)))
 		}
 		return 0, fmt.Errorf("m2cp returned no revision (raw=%q)",
-			strings.TrimSpace(stdout.String()))
+			strings.TrimSpace(string(out.Stdout)))
 	}
 	fmt.Printf("   revision: %d\n", resp.Output.Revision)
 	return resp.Output.Revision, nil
@@ -583,15 +872,12 @@ type snapInfoRevision struct {
 }
 
 func resolveSnapRevision(name, arch, version string) (int, error) {
-	cmd := exec.Command(commands.M2cpCLI, "store", "snap", "info", name, arch, "--json")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return 0, fmt.Errorf("m2cp store snap info %s %s: %w", name, arch, err)
+	out, err := commands.M2cpRun("store", "snap", "info", name, arch, "--json")
+	if err != nil {
+		return 0, err
 	}
 	var resp snapInfoResponse
-	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal(out.Stdout, &resp); err != nil {
 		return 0, fmt.Errorf("parsing snap info JSON for %s: %w", name, err)
 	}
 	for _, r := range resp.Output.SnapDeclaration.SnapRevisions {
@@ -629,19 +915,16 @@ func resolveSnapRevision(name, arch, version string) (int, error) {
 //
 // Bundle stays in memory; nothing is written to disk.
 func injectTrustFromM2cp() ([]asserts.Assertion, error) {
-	fmt.Printf("=> fetching trust bundle: m2cp store system assertion\n")
-	cmd := exec.Command(commands.M2cpCLI, "store", "system", "assertion")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("m2cp store system assertion: %w", err)
+	fmt.Printf("=> fetching trust bundle\n")
+	out, err := commands.M2cpRun("store", "system", "assertion")
+	if err != nil {
+		return nil, err
 	}
 
 	// Decode the whole bundle first: we need the root key's account-id
 	// before we can tell which account assertion is the trust anchor.
 	var all []asserts.Assertion
-	dec := asserts.NewDecoder(&stdout)
+	dec := asserts.NewDecoder(bytes.NewReader(out.Stdout))
 	for {
 		a, err := dec.Decode()
 		if errors.Is(err, io.EOF) {
@@ -754,13 +1037,10 @@ func (snapStateMachine *SnapStateMachine) manifestStageDir() (string, error) {
 // to split content from signature, so a trailing blank line at EOF
 // would make it mistake the signature for the body.
 func writeM2cpStdout(dst string, args ...string) error {
-	cmd := exec.Command(commands.M2cpCLI, args...)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("m2cp %s: %w", strings.Join(args, " "), err)
+	out, err := commands.M2cpRun(args...)
+	if err != nil {
+		return err
 	}
-	payload := append(bytes.TrimRight(stdout.Bytes(), "\r\n \t"), '\n')
+	payload := append(bytes.TrimRight(out.Stdout, "\r\n \t"), '\n')
 	return os.WriteFile(dst, payload, 0o644)
 }

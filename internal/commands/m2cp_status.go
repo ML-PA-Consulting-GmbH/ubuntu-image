@@ -1,12 +1,9 @@
 package commands
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -26,6 +23,12 @@ type M2cpUserStatus struct {
 	// StoreURL is the GraphQL endpoint, e.g.
 	// https://host/graphql -- not the snap-store base.
 	StoreURL string
+	// JWT is the session's bearer token, which `m2cp user status
+	// --json` carries today. It authenticates the builder's direct
+	// GraphQL calls (see m2cp_graphql.go) and belongs in an
+	// Authorization header and nowhere else -- never in a log line,
+	// an error message or build.yaml.
+	JWT string
 }
 
 // m2cpStatusBody is the subset of the status payload we read. Both
@@ -38,6 +41,7 @@ type m2cpStatusBody struct {
 	Status  string `json:"status"`
 	Session struct {
 		Store  string `json:"store"`
+		JWT    string `json:"jwt"`
 		Tenant struct {
 			TenantName string `json:"tenantName"`
 			Alias      string `json:"alias"`
@@ -50,14 +54,11 @@ type m2cpStatusBody struct {
 // M2cpSessionStatus runs `m2cp user status --json` and returns the
 // parsed session state.
 func M2cpSessionStatus() (M2cpUserStatus, error) {
-	cmd := exec.Command(M2cpCLI, "user", "status", "--json")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return M2cpUserStatus{}, fmt.Errorf("%s user status --json: %w", M2cpCLI, err)
+	out, err := M2cpRun("user", "status", "--json")
+	if err != nil {
+		return M2cpUserStatus{}, err
 	}
-	return parseM2cpUserStatus(stdout.Bytes())
+	return parseM2cpUserStatus(out.Stdout)
 }
 
 // parseM2cpUserStatus reads either known shape of the status payload:
@@ -90,6 +91,7 @@ func parseM2cpUserStatus(raw []byte) (M2cpUserStatus, error) {
 	out := M2cpUserStatus{
 		Tenant:   firstNonEmpty(body.Session.Tenant.Alias, body.Session.TenantAlias, body.Session.Tenant.TenantName, body.Session.TenantName),
 		StoreURL: body.Session.Store,
+		JWT:      body.Session.JWT,
 	}
 
 	switch {

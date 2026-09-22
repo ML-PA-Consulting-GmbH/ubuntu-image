@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -343,11 +342,8 @@ func liotModelDryRun(m *commands.OnlineManifest) error {
 	}
 	tmp.Close()
 
-	cmd := exec.Command(commands.M2cpCLI, "store", "system", "model", "push",
+	return commands.M2cpStream("store", "system", "model", "push",
 		"--dry-run", tmp.Name(), "dry-run (not pushed)")
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
 
 // hasOutputDirFlag reports whether -O / --output-dir was passed
@@ -423,13 +419,9 @@ func liotPreflightSnapsExist(m *commands.OnlineManifest) bool {
 // the appstore for the given architecture. One m2cp call, cheap to
 // scan even for stores with thousands of snaps.
 func listAppstoreSnapNames(arch string) (map[string]bool, error) {
-	cmd := exec.Command(commands.M2cpCLI, "store", "snap", "list", "-a", arch, "--json")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("%s store snap list: %w (stderr=%q)",
-			commands.M2cpCLI, err, strings.TrimSpace(stderr.String()))
+	out, err := commands.M2cpRun("store", "snap", "list", "-a", arch, "--json")
+	if err != nil {
+		return nil, err
 	}
 	var resp struct {
 		Output struct {
@@ -438,12 +430,12 @@ func listAppstoreSnapNames(arch string) (map[string]bool, error) {
 			} `json:"snapDeclarations"`
 		} `json:"output"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal(out.Stdout, &resp); err != nil {
 		return nil, fmt.Errorf("parsing %s snap list: %w", commands.M2cpCLI, err)
 	}
-	out := map[string]bool{}
+	names := map[string]bool{}
 	for _, d := range resp.Output.SnapDeclarations {
-		out[d.SnapName] = true
+		names[d.SnapName] = true
 	}
-	return out, nil
+	return names, nil
 }
