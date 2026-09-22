@@ -520,9 +520,12 @@ on `assertionType.assertionTypeName`, `assertionBody`, `tenantId` and
 `account-key` among the types it serves. Today one caller uses it, for
 models (`helper/model.go`). Two pieces are missing:
 
-- a CLI command that asks for an account, e.g.
-  `m2cp store system assertion --account <account-id>` wrapping
-  `AssertionsByTypeAndStringFilter(ctx, "account", "account-id: <id>")`;
+- a CLI command that asks for an account. This one now exists:
+  `m2cp store account assertion <tenantAlias | tenantName | accountId>`
+  (`Tools/m2cp/go/cmd/store/account/`), which reads the account through
+  the same generic query and prints the assertion as snapd reads it.
+  The builder keeps its own GraphQL call until that m2cp release
+  reaches customers, and swaps to the command once it has;
 - server-side visibility of the foreign account: reads are scoped to
   the caller's tenant unless the record is globally shared or the
   caller holds an `.All` scope (`go/graphql-examples.md`), so
@@ -544,13 +547,16 @@ anonymous request. `TestSnapStoreAssertionEndpointLive`
 that route expects, the build host does not hold it, so the builder
 asks GraphQL.
 
-Two patches carry this forward, kept in `~/r/M2CP.2/Tools/m2cp`:
-`cmd/store/system/gql.go` adds `m2cp store system gql`, which runs a
-raw query with the session's own token and prints the server's answer
-verbatim — the way to measure what the store serves a given tenant
-without a command per question; and `cmd/user/jwt.go` now prints the
-token on stdout (it used Go's builtin `println`, which writes to
-stderr, so the token could be neither piped nor kept out of a log).
+Three patches carry this forward, in `~/r/M2CP.2/Tools/m2cp`:
+`cmd/store/account/` adds `m2cp store account assertion`, the command
+the builder was missing, resolving a tenant by alias, by name, or by
+account-id; `cmd/store/system/gql.go` adds `m2cp store system gql`,
+which runs a raw query with the session's own token and prints the
+server's answer verbatim — the way to measure what the store serves a
+given tenant without a command per question; and `cmd/user/jwt.go` now
+prints the token on stdout (it used Go's builtin `println`, which
+writes to stderr, so the token could be neither piped nor kept out of a
+log).
 
 Worth raising separately: `m2cp user status --json` carries the raw
 token under `session.jwt` whatever the `--jwt` flag says, because the
